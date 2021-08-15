@@ -1,0 +1,292 @@
+---
+title: "NYC shootings"
+date: "8/14/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+```
+
+
+# Statement of interest
+For this project I will use the shooting incidence data provided by the city of 
+New York to address the following questions:
+
+1) How has the number of shooting incidents changed over the last years 
+2) Does the number of shootings differ from Borough to Borough
+3) Is the number of murders is related to the number of shooting incidents
+
+
+
+# Import the data
+I will import the data from the data repository of the City of New York.
+
+```{r Import, echo=TRUE}
+ny_shooting <- 
+    read.csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+colnames(ny_shooting)
+
+```
+
+
+# Clean Up the data
+I will extract the columns I need from the data set.
+
+```{r Clean, echo=TRUE}
+ny_shooting <- 
+    select (ny_shooting, OCCUR_DATE, BORO, STATISTICAL_MURDER_FLAG) %>%
+    rename(date = 'OCCUR_DATE', Boro = 'BORO', 
+           Murder = 'STATISTICAL_MURDER_FLAG') %>%
+    mutate(date = mdy(date))
+summary(ny_shooting)
+head(ny_shooting)
+```
+
+I have 15 years worth of data. To analyze further, I will count the cases per 
+year and by borough.
+
+Analyzing a time period of a year at a time, will also get rid of seasonal
+fluctuations.
+
+Also, I will translate the murder flag into 0,1 to be able to count the number
+of murders.
+```{r}
+
+ny_shooting <- mutate(ny_shooting, Murder = ifelse(Murder == "true", 1, 0))
+boro_year_count <- ny_shooting %>%
+    group_by(Year = year(date), Boro) %>%
+    summarize(Shootings=n(), Murders=sum(Murder), .groups = "drop")
+    
+head(boro_year_count)
+```
+
+
+# Visualize Data
+
+To be able to compare the shootings in the different boroughs over time, 
+I will plot them on a graph. 
+
+To show the trend more clearly the smooth option is used.  
+
+```{r}
+ggplot(data=boro_year_count, aes(x=Year, y=Shootings, color=Boro)) +
+    geom_point(aes(color= Boro)) +
+    geom_smooth(se=FALSE) +
+    scale_y_log10() +
+    labs(title = "Shootings in the 5 Boroughs", y="Number of shootings", x=NULL)
+    
+    
+```
+
+Looking at the data a little closer a couple of things need to be further 
+investigated.
+
+1) The number of cases always seems to be highest in Brooklyn and lowest in 
+Staten Island. 
+
+    It might be helpful to look at the population of the different boroughs and 
+look at shootings relative to the size of population.
+
+2) The number of shootings has been almost consistently decreasing for the last
+10 years. However, in 2020 there has been a significant uptick for each borough.
+
+    Without additional data beyond that year, it is hard to deduce if this is an
+anomaly maybe brought on by the COVID-19 epidemic or the beginning of a 
+reversal of the positive trend of the previous years as the smoothed lines seem
+to indicate.
+
+
+## Import additional data
+
+In order to calculate the shootings relative to the population of the borough,
+I have found Census data published by the City of New York.
+
+```{r }
+boro_population <- 
+read.csv("https://data.cityofnewyork.us/api/views/xywu-7bv9/rows.csv?accessType=DOWNLOAD")
+colnames(boro_population)
+```
+As we only have shooting data spanning the range of 2006 to 2020, 
+
+I will keep the population data from these years.
+
+
+```{r}
+boro_population <- select (boro_population, Borough, X2000, X2010, X2020) %>%
+    rename(Boro="Borough")
+head(boro_population)
+```
+
+A little clean-up, stripping leading blanks, capitalizing, to prepare data
+before combining the two sets.
+
+```{r}
+boro_population$Boro = toupper(str_trim(boro_population$Boro))
+
+boro_shooting <- merge(x=boro_year_count, y=boro_population, by= "Boro", 
+                       all.x=TRUE, all.y=FALSE) 
+head(boro_shooting)
+```
+
+Now, we can calculate the shootings, murders per 1 Mill residents. This will
+allow us to better analyze if differences in the shootings are related to
+the different Borough sizes.
+
+Note, the census is only taken every 10 years. For years where no census data
+is available, I will use the population data from the last census. 
+
+
+```{r}
+boro_shooting_corr <- mutate(boro_shooting, 
+            ShootingsPer = ifelse(Year < year(ymd("2010-01-01")), 
+            Shootings * 1000000 / X2000, ifelse(Year < year(ymd("2020-01-01")),
+            Shootings * 1000000 / X2010, Shootings * 1000000 / X2020))) %>%
+    mutate(boro_shooting,
+            MurdersPer = ifelse(Year < year(ymd("2010-01-01")), 
+            Murders * 1000000 / X2000, ifelse(Year < year(ymd("2020-01-01")),
+            Murders * 1000000 / X2010, Murders * 1000000 / X2020)))
+    
+   
+head(boro_shooting_corr)
+```
+
+## Visualize the adjusted Data
+
+I will now plot the shootings per 1 Mill residents to see if there still is a 
+big difference between the 5 boroughs.
+
+```{r}
+ggplot(data=boro_shooting_corr, aes(x=Year, y=ShootingsPer, color=Boro)) +
+    geom_point(aes(color= Boro)) +
+    geom_smooth(se=FALSE) +
+    scale_y_log10() +
+    labs(title = "Shootings in the 5 Boroughs", 
+         y="Number of shootings per 1 Mio residents", x=NULL)
+    
+    
+```
+
+As we can see looking at the shootings relative to the size of the population,
+Brooklyn actually does not have a significantly higher number of shootings than 
+all of the other Boroughs. 
+
+The Bronx has the highest number of shootings per 
+residents. 
+
+Brooklyn and the Bronx have more shootings per resident 
+than the other three Boroughs. 
+
+Manhattan, Queens and Staten Island are very 
+similar in regards to the number of shootings per resident.
+
+
+# Modelling of shooting and murder data 
+
+Another interesting area to analyze is the outcome of the shootings. 
+Naively, we would believe that an increased number of shootings will
+lead to a higher numbers of murders.
+
+I will plot the number of shootings and the number of murders to see if there 
+is a possible correlation.
+
+
+```{r}
+boro_shooting_corr %>% ggplot() +
+    geom_point(aes(x = ShootingsPer, y = MurdersPer), color = "blue") +
+    labs(title = "NYC shootings and murders", 
+    y="Number of murders per 1 Mio residents", 
+    x="Shootings per 1 Mio residents")
+```
+
+
+
+
+
+The diagram shows that there is correlation between the number of shootings and deaths. 
+
+I will build a linear model to see if it can be used to predict the number of murders given the number of shootings.
+
+
+```{r}
+linearMod <- lm( MurdersPer ~ ShootingsPer, data=boro_shooting_corr)  
+summary(linearMod)
+```
+I will add a prediction for the number of murders based on the number of
+shootings (both per Mill residents)
+
+```{r}
+boro_murder_pred <- boro_shooting_corr %>%
+    mutate(predMurder = predict(linearMod))
+view(boro_murder_pred)
+```
+
+Now, I will plot the predictions and compare them with the actual number of 
+murders
+
+```{r}
+boro_murder_pred %>% ggplot() +
+    geom_point(aes(x = ShootingsPer, y = MurdersPer), color = "blue") +
+    geom_point(aes(x = ShootingsPer, y = predMurder), color = "red") +
+    geom_text(aes(x = ShootingsPer, y = MurdersPer, 
+            label=ifelse(MurdersPer > 100, paste(Boro,Year,sep= " "), "")),
+               hjust=1.1,vjust=-0.1, size=3) +
+    labs(title = "NYC shootings and murders",
+    subtitle = "Actual vs. expected", 
+    y="Number of murders per 1 Mio residents", 
+    x="Shootings per 1 Mio residents")
+```
+
+It looks like my assumption of a proportional relationship between shootings
+and murders holds true. 
+
+The actual murder rate per 1 Mill residents (in blue) 
+mostly follows the predicted number of murders (in red). 
+
+However, one outlier
+with over 100 murders should further be investigated.
+
+
+# Bias Analysis
+
+* Data Bias
+    + Shooting Data
+    
+    It might be worth while looking at possible bias in the shooting data. 
+    Do all the Boroughs have the same process in reporting the data? 
+    + Population Data
+    
+    Given that census data relies on the participation of the citizens, it is 
+    not a given that these numbers accurately reflect the number of residents.
+    The Bronx and Brooklyn have a higher number of immigrants who are often not 
+    accurately counted in Census data as they are reluctant to provide
+    information to the government.
+
+* Personal Bias
+
+    Given that I personally lived in Brooklyn for a couple of years and have 
+    witnessed a shooting myself during this time, I might be biased to believe 
+    that Brooklyn is more dangerous than the other Boroughs. 
+    
+    This idea was confirmed after seeing the first graph showing Brooklyn 
+    leading the number of shootings each year. 
+    
+    To mitigate this bias, I pulled in the population data in order to further 
+    analyze the reasons for the high number of shootings in Brooklyn.
+    
+# Conclusions
+1) Even adjusted for population size, the Bronx and Brooklyn have a higher 
+number of shootings than Queens, Staten Island and Manhattan.
+
+2) Even though the number of shootings has been on a downward trajectory for 
+the last ten years, there has been a significant uptick in 2020. This holds 
+true for all boroughs.
+
+3) There is a direct relationship between the number of shootings and the 
+number of murders. Most likely, measures put in place to reduce shootings
+would also bring down the number of murders.
