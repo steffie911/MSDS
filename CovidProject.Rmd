@@ -1,0 +1,488 @@
+---
+title: "COVID-19 Case and Vaccination analysis"
+date: "8/13/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(rpart)
+```
+
+
+# Statement of interest
+
+With this project I want to look into how vaccination rates in the US have 
+impacted the last wave (Summer 2021) of the Coronavirus pandemic. 
+
+I want to see if there is a direct relationship between the number of people 
+vaccinated and the number of new cases during this wave. 
+
+
+# Import the data
+
+For my analysis I will use the COVID-19 Data Repository provided by the Johns 
+Hopkins University. 
+The repository provides data about the cases and deaths and also information 
+about the vaccinations. For this project I am interested in US numbers only.
+
+
+```{r Import, echo=TRUE}
+urlpath <- str_c("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/",
+"master/csse_covid_19_data/csse_covid_19_time_series/")
+url1 <-  str_c(urlpath, "time_series_covid19_confirmed_US.csv")
+url2 <-  str_c(urlpath, "time_series_covid19_deaths_US.csv")
+
+vurlpath <- str_c("https://raw.githubusercontent.com/govex/COVID-19/",
+                  "master/data_tables/vaccine_data/us_data/time_series/")
+vurl1 <- str_c(vurlpath, "people_vaccinated_us_timeline.csv")
+
+covid_cases <- read.csv(url1)
+covid_deaths <- read.csv(url2)
+head(covid_cases)
+head(covid_deaths)
+
+vacc <- read.csv(vurl1)
+head(vacc)
+
+```
+
+
+# Clean up data
+
+The cases and deaths are listed in their respective data frames as columns 
+rather than rows. I will pivot the frames to move the relevant data to 
+rows, keeping only the columns I am interested in.
+Also, I will extract the date in a proper date format.
+Then I will combine the cases and deaths together into one data frame,
+matching by date and location.
+
+```{r Clean, echo=TRUE}
+covid_cases <- covid_cases %>%
+    pivot_longer(cols = -c(UID : Combined_Key), 
+    names_to = "date", values_to = "cases" ) %>%
+    select ( -c(UID,iso2,iso3,code3,FIPS, Lat, Long_, Combined_Key))%>%
+    mutate( date = mdy(str_replace(date,'X','')))
+
+covid_deaths <- covid_deaths %>%
+    pivot_longer(cols = -c(UID:Population), 
+    names_to = "date", values_to = "deaths" ) %>%
+    select ( -c(UID,iso2,iso3,code3,FIPS, Lat, Long_, Combined_Key)) %>%
+    mutate( date = mdy(str_replace(date,'X','')))
+
+covid_cases <- covid_cases %>%
+    left_join(covid_deaths,by = 
+                  c("Admin2", "Province_State", "Country_Region", "date"))
+
+```
+
+The vaccination data is already in rows.
+I will to keep only the columns I need and transform the date value  and rename
+the long column names to make them easier to handle.
+
+
+```{r}
+vacc <- vacc %>%
+    select ( -c (FIPS,Lat, Long_, Combined_Key)) %>%
+    rename(date = "Date", full = "People_Fully_Vaccinated",
+          part = "People_Partially_Vaccinated" ) %>%
+    mutate( date = ymd(date)) 
+    
+```
+
+## Combine data
+
+Unfortunately, the vaccination data is not available per county. 
+This means I have to limit my analysis to vaccinations per state.
+I will aggregate the cases and deaths per state and date and then merge them
+with the vaccinations. 
+
+To account for population differences of the states, I will calculate the 
+cases and deaths per 100,000 residents and the vaccinations as a percent of 
+the population.
+
+```{r}
+state_cases <- covid_cases %>%
+    group_by(Province_State, Country_Region, date) %>%
+    summarize(cases = sum(cases, na.rm=TRUE), deaths = sum(deaths, na.rm=TRUE),
+              Population = sum(Population)) 
+
+state_cases <- state_cases %>%
+    left_join(vacc,by = c("Province_State", "Country_Region", "date")) %>%
+    mutate(casesph = cases * 100000 / Population,
+           deathsph = deaths * 100000 / Population,
+           fullp = full * 100 / Population, 
+           partp  = part * 100 / Population)
+```
+
+# Visualize data to determine target time frame
+
+First I want to look at how the rate of cases and vaccinations changes over time.
+This will help me determine the starting point of the summer wave and what time 
+frame I want to focus my further analysis on.
+
+I will plot the cases and deaths for the entire US and also look at how the 
+vaccination rate changes over time.
+
+```{r}
+us_total <- state_cases %>%
+    group_by(Country_Region, date) %>%
+    summarize(cases = sum(cases), deaths = sum(deaths), 
+              Population = sum(Population),
+              full = sum(full, na.rm=TRUE), 
+              part = sum(full, na.rm=TRUE)) %>%
+    mutate(casesph = cases * 100000 / Population,
+           deathsph = deaths * 100000 / Population,
+           fullp = full * 100 / Population, 
+           partp  = part * 100 / Population)
+    
+tail(us_total)
+summary(us_total)
+```
+
+
+
+Now I will plot the number of cases and death and also draw a plot with the change in
+vaccination rates. 
+
+I will set a starting point of 4/1/2021 the date 
+vaccinations were widely available in most states.
+
+```{r}
+us_total %>%
+    filter(date > ymd("2021/4/1")) %>%
+    ggplot( aes(x=date, y=casesph)) +
+    geom_point(aes(color="Cases")) +
+    geom_line(aes(color="Cases")) +
+    #scale_y_log10() +
+    labs(title = "US Covid-Cases and deaths per 100,000 people", 
+         y="Number of cases/deaths", x=NULL)
+
+us_total %>%
+    filter(date > ymd("2021/4/1")) %>%
+    ggplot( aes(x=date, y=deathsph)) +
+    geom_point(aes(color="Deaths")) +
+    geom_line(aes(color="Deaths")) +
+    #scale_y_log10() +
+    labs(title = "US Covid-Cases and deaths per 100,000 people", 
+         y="Number of cases/deaths", x=NULL)
+
+us_total %>%
+    filter(date > ymd("2021/4/1")) %>%
+    ggplot( aes(x=date, y=fullp)) +
+    geom_point(aes(y=fullp, color="Fully")) +
+    geom_line(aes(y=fullp, color="Fully")) +
+    geom_point(aes(y=partp, color="Partially")) +
+    geom_line(aes(color="Partially")) +
+    #scale_y_log10() +
+    labs(title = "Percent of US population Vaccinated", 
+         y="% vaccinated", x=NULL)
+
+
+
+```
+
+# Analyse differences in states with high and low vaccination rates
+
+The plots show that after leveling off in June, the number of cases 
+starts to increase more rapidly again in July. 
+
+I will focus my analysis on the time frame starting on July 1st. The cases as of 
+this date will serve as the baseline. 
+I will then look at how many cases where added after that date.
+
+
+## Identify states with low and high vaccination rates
+
+To compare the number of cases in low vs. high vaccinated states, I will select 
+the 10 states that had the highest and the lowest vaccination percentage 
+on July 1st.
+
+I will then track how many new cases are reported in these states in the 
+following weeks.  
+
+
+```{r}
+bottom_10 <- state_cases %>%
+    filter(date==ymd("2021/7/1"), cases > 0, Population > 500000) %>%
+    filter(!is.na(fullp)) %>% 
+    select(Country_Region, Province_State, cases, deaths,fullp) %>%
+    ungroup() %>%
+    slice_min(fullp, n=10)
+
+top_10 <- state_cases %>%
+    filter(date==ymd("2021/7/1"), cases > 0, Population > 500000) %>%
+    filter(!is.na(fullp)) %>% 
+    select(Country_Region, Province_State, cases, deaths,fullp) %>%
+    ungroup() %>%
+    slice_max(fullp, n=10)
+
+bottom_10 
+
+top_10 
+
+```
+On July 1st the lowest vaccinated states all had a rate below 40%, 
+ranging from around 32.7% in Alabama to 38.8% in South Carolina.
+
+The highest were all above 54%, ranging from 54.2% in New York 
+to 65.2% in Rhode Island.
+
+Also, on July 1st some of the states with high vaccinations rates already have 
+a high number of total cases and deaths from earlier phases of the pandemic, 
+for example New York and New Jersey. 
+
+To account for this, I will use these numbers as the baseline and only look at 
+new cases after that date.
+
+
+
+## Analyse new case numbers in selected states
+
+I will now calculate how many new cases these states have added after 7/1/21. 
+To account for the different size of the states, I also calculate new 
+cases/deaths per 100,000 residents.
+
+
+```{r}
+bottom_10 <- bottom_10 %>%
+    rename (base_cases = "cases", base_deaths = "deaths",
+            base_fullp = "fullp")
+
+top_10 <- top_10 %>%
+    rename (base_cases = "cases", base_deaths = "deaths",
+            base_fullp = "fullp")
+
+bottom_10_cases <- state_cases %>%
+    filter(Province_State %in% bottom_10$Province_State, date>=ymd("2021/7/1")) %>%
+    left_join(bottom_10,by = c("Province_State", "Country_Region")) %>%
+    mutate(new_cases = cases - base_cases,
+           new_deaths = deaths - base_deaths, 
+           new_casesph = new_cases * 100000 / Population,
+           new_deathsph = new_deaths * 100000 / Population,
+           category = "Bottom 10")
+
+top_10_cases <- state_cases %>%
+    filter(Province_State %in% top_10$Province_State, date>=ymd("2021/7/1")) %>%
+    left_join(top_10,by = c("Province_State", "Country_Region")) %>%
+    mutate(new_cases = cases - base_cases,
+           new_deaths = deaths - base_deaths, 
+           new_casesph = new_cases * 100000 / Population,
+           new_deathsph = new_deaths * 100000 / Population,
+           category = "Top 10")
+```
+
+
+```{r}
+    ggplot(bottom_10_cases, aes(x=date, y=new_casesph)) +
+    geom_point(aes(color=Province_State)) +
+    geom_line(aes(color=Province_State)) +
+    ylim(0,3000) +
+    labs(title = "Covid-Cases since 2021/7/1 in states with low vaccination rates", y="Number of new cases per 100K", x=NULL) 
+
+    ggplot(top_10_cases, aes(x=date, y=new_casesph)) +
+    geom_point(aes(color=Province_State)) +
+    geom_line(aes(color=Province_State)) +
+    ylim(0,3000) +
+    labs(title = "Covid-Cases since 2021/7/1 in states with high vaccination rates", y="Number of new cases per 100K", x=NULL) 
+  
+    
+```
+
+The diagrams show that the states with the lowest vaccination rates as per 
+July 1st have had consistently more new cases in the following months than the 
+states with the highest vaccination rates. 
+
+By the middle of August even Idaho, which has the lowest incidence rate of 
+these 10 states has added more than 5000 new case per 100,000 residents. 
+5 of theses states had more than 1000 new cases and Louisiana and Arkansas even 
+reached 2000 new cases in the second half of August. 
+
+In comparison, the case load in the highest vaccinated states overall looks 
+much lower. 
+
+In the 2nd half of August only Washington and New Mexico top 500 new infections
+per 100,000 residents.
+
+The graph also shows only moderate growth over the course of these two months.
+
+
+
+# Modelling of COVID cases based on vaccinations 
+
+I will now analyze if, as the graphs above seem to indicate, there is a 
+relationship between the vaccination rate in a state and the number of 
+new cases.
+
+To build a model, I will first calculate for all states how many cases they 
+have added since 7/1/2021.
+
+
+```{r}
+july1_cases <- state_cases %>%
+    filter(date==ymd("2021/7/1"), cases > 0, Population > 500000) %>%
+    filter(!is.na(fullp)) %>% 
+    select(Country_Region, Province_State, cases, deaths, fullp) %>%
+    rename (base_cases = "cases", base_deaths = "deaths",
+            base_fullp = "fullp")
+
+latest_cases <- state_cases %>%
+    filter(!is.na(fullp)) %>% 
+    filter(cases > 0, Population > 500000) %>%
+    slice_max(date)
+
+latest_cases <- latest_cases %>%
+    left_join(july1_cases, by=c("Province_State", "Country_Region")) %>%
+    mutate(new_casesph = (cases - base_cases) * 100000 / Population, 
+           new_deathsph = (deaths - base_deaths) * 100000 / Population)
+
+```
+
+
+Which states have added the most and least cases since July?
+
+```{r}
+latest_cases %>%
+    ungroup() %>%
+slice_max(new_casesph, n=10 ) %>%
+    select(Province_State, new_casesph, fullp )
+
+latest_cases %>%
+    ungroup() %>%
+slice_min(new_casesph, n=10 ) %>%
+    select(Province_State, new_casesph, fullp )
+
+```
+
+All of the 10 states with the highest number of cases added have a
+vaccination rate below 50% as of 8/13/2021. 
+5 of those have a rate lower than 40 %.
+
+On the other hand 7 out of 10 states with the lowest number of cases have a 
+vaccination rate above 50% and 5 of them have a rate above 55%.
+
+I will plot a diagram to visualize the relationship of the number of new cases
+and the vaccination rate.
+
+```{r}
+    ggplot(latest_cases, aes(x=fullp, y=new_casesph)) +
+    geom_point(aes(color="New cases")) +
+    geom_text(aes(label=ifelse(new_casesph>1200,Province_State,
+                        ifelse(fullp>65,Province_State, "" ))),
+              hjust=-0.1,vjust=-0.1, size=3) +
+    xlim(35,75) +
+    labs(title = "Number of Covid-Cases since 2021/7/1", x="Vaccination % ", 
+         y="Total new cases per 100K")
+```
+
+It seems that states with a vaccination rate above 50% tend to have a 
+lower rate of new cases. States with a rate lower than around 40% tend to have
+a significantly higher number of new cases.
+
+I will now try to model this behavior using a classification tree.
+
+```{r}
+mod = rpart(new_casesph ~ fullp, data=latest_cases) 
+plot(mod, uniform=TRUE,margin=0.2)
+text(mod, use.n=TRUE, cex=.8)
+
+```
+
+The model seems to confirm my previous finding that rates of 50% and 40% are an
+indicator of whether the rate of new cases is trending significantly lower 
+or higher respectively.
+
+I will now use this model to calculate predictions of new number of cases based 
+on the vaccination rate.
+
+
+```{r}
+latest_cases$pred <- predict(mod)
+
+
+```
+
+Now, I will plot the predictions and compare them with the actual number of 
+new cases.
+
+
+```{r}
+    ggplot(latest_cases, aes(x=fullp, y=new_casesph)) +
+    geom_point(aes(color="New cases")) +
+    geom_line(aes(y=pred, color="New cases predicted")) +
+    geom_text(aes(label=ifelse(new_casesph>1250,Province_State,
+                        ifelse(fullp>65,Province_State, "" ))),
+              hjust=-0.1,vjust=-0.1, size=3) +
+    xlim(35,75) +
+    labs(title = "Number of Covid-Cases since 2021/7/1", x="Vaccination % ", 
+         y="Total new cases")
+
+```
+
+The diagram shows that the predicted number of cases somewhat reflects the 
+number of cases. 
+
+However, a lot of states with low vaccination rates (< 50 %) do not show the 
+predicted number of cases. As shown above,  South Dakota, North Dakota and 
+Michigan have among the 10th lowest number of cases, but their vaccination rates
+are all below 50%.
+
+On the other hand none of the states with the vaccination rate above 50% reaches more 
+than 750 cases per 100,000 residents and most have even below 500 cases.
+Florida, with a vaccination rate of 49.8%, seems to be the one big outlier.
+
+
+# Bias Analysis
+
+* Data Bias
+
+    As the number of cases and vaccinations is reported by each state, 
+    there might be different rules on how to test for and report COVID cases.
+    Also, limited access to testing centers and medical facilities might lead to
+    an under counting of cases.
+    
+    On the other hand, if vaccinated people get infected with the COVID-19 virus
+    they might not show any symptoms and therefore will not get tested. 
+    The numbers might therefore not correctly represent cases among the fully 
+    vaccinated population.
+    
+    
+* Personal Bias
+
+    Given that I strongly believe in the efficacy of the COVID-19 vaccines, 
+    my analysis might be biased in this regard.
+    
+    I might have overlooked other factors that could drive the new number 
+    of cases lower, for example restrictions and adherence to CDC mask guidelines.
+    
+# Conclusions
+1) States with a high rate of vaccinations (at least 50%) have been able to 
+avoid a high increase in new cases during this new wave.   
+
+2) Most of the states with a lower vaccination rate have seen a steep rise 
+in the number of cases during the summer. 
+
+    However, there is a high number of states with low vaccination rates 
+that did not see a dramatic spike in cases.
+
+    This indicates that other factors, maybe population density, adherence to CDC 
+guidelines, etc. should be considered to build a more representative model.  
+
+3) Even though it looks like the vaccination rate is not the only factor driving
+the number of new infections, the analysis shows that a high vaccination rate 
+is at least contributing to a lower number in cases. 
+
+    Therefore, states and the federal government should look into measures that will 
+encourage more people to get vaccinated. 
+
+
+
+```{r}
+sessionInfo()
+```
+
